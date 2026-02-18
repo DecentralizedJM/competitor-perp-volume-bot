@@ -8,6 +8,7 @@ A Telegram bot to instantly query Bybit & Binance USDT perpetual futures volumes
 - **Historical Queries**: Query volume for a specific date or a date range (up to 30 days for aggregate).
 - **Per-Token Volume**: Check the volume of any specific token (e.g., `/ETH`, `/BTC`, `/SOL`).
 - **IST Day Boundaries**: All daily volumes are calculated from 00:00 to 23:59 IST.
+- **Accurate Historical Data**: Using hourly klines to ensure IST day parity for per-token historical lookups.
 - **Live Data**: Today's data is fetched using real-time 24h rolling tickers.
 - **Async & Fast**: Built with `aiohttp` for concurrent API requests.
 
