@@ -55,6 +55,18 @@ TELEGRAM_BOT_TOKEN=your_bot_token_here
 python3 volume_bot.py
 ```
 
+## 🚂 Deploy to Railway
+
+1. **Fork/Clone** this repository to your GitHub.
+2. Log in to [Railway](https://railway.app/).
+3. Create a **New Project** → **Deploy from GitHub repo**.
+4. Select your `competitor-perp-volume-bot` repository.
+5. In the Railway dashboard for your service:
+   - Go to **Variables**.
+   - Add `TELEGRAM_BOT_TOKEN` with your bot token.
+   - (Optional) Verify that the **Start Command** is detected as `worker: python3 volume_bot.py` or manually set it in **Settings**.
+6. Deployment will start automatically. The bot runs as a background worker.
+
 ## 📊 CLI Tool
 Also included is a standalone CLI script `perp_volume.py` for local usage without Telegram.
 
