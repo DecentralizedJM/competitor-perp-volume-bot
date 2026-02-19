@@ -1,4 +1,4 @@
-# 📊 Perpetual Volume Bot (IST)
+# 📊 Perpetual Volume Fetcher Bot
 
 A Telegram bot to instantly query Bybit & Binance USDT perpetual futures volumes. All day boundaries and timestamps are aligned to **India Standard Time (IST)**.
 
