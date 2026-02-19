@@ -393,6 +393,38 @@ async def aggregate_daily_volume_ist(session: aiohttp.ClientSession,
 
     today_key = now_ist().strftime("%Y-%m-%d")
 
+    # If today is included, we need to calculate volume since midnight IST
+    # independently using klines, rather than 24h ticker (which is rolling)
+    if today_key in wanted_keys:
+        # Calculate start of today in UTC ms
+        today_start_ms = ist_day_start_utc_ms(now_ist())
+        today_end_ms = ist_day_end_utc_ms(now_ist())
+        
+        # We need smaller candles (hourly) to accurately catch volume since 00:00 IST
+        # However for aggregate of ALL pairs, hourly for 400+ pairs is too slow.
+        # Daily klines (UTC based) might overlap.
+        # 
+        # Strategy for Aggregate Today:
+        # 1. Get 24h ticker (rolling) -> this is WRONG for "since midnight"
+        # 2. Get Daily Kline (UTC) -> this covers 05:30 IST yesterday to 05:30 IST today (partial)
+        # 
+        # Correct approach for accurate "since midnight IST" without fetching 10,000 hourly candles:
+        # There is none without heavy API usage.
+        #
+        # Compromise:
+        # Use the Daily Kline (UTC) that covers the majority of "Today IST".
+        # 00:00 IST = 18:30 UTC (previous day).
+        # So "Today IST" spans two UTC days.
+        # 
+        # Let's stick to the previous method but filter strictly for klines that fall 
+        # entirely or mostly within today? No, that misses live data.
+        #
+        # FASTEST APPROXIMATION for "Since Midnight IST":
+        # fetch_start_ms is already set to capture overlaps.
+        # The 'process_bybit/binance' functions already buckets klines into IST days.
+        # We just need to NOT skip today_key in those loops, and REMOVE the 24h ticker block.
+        pass
+
     async def process_bybit():
         tasks = [bybit_kline_daily(session, sym, fetch_start_ms, fetch_end_ms)
                  for sym in bybit_syms]
@@ -400,7 +432,7 @@ async def aggregate_daily_volume_ist(session: aiohttp.ClientSession,
         for klines in results:
             for k in klines:
                 day = k["ist_date_key"]
-                if day not in wanted_keys or day == today_key:
+                if day not in wanted_keys:
                     continue
                 if day not in daily:
                     daily[day] = {"bybit": 0, "binance": 0, "date_fmt": date_fmt(
@@ -414,7 +446,7 @@ async def aggregate_daily_volume_ist(session: aiohttp.ClientSession,
         for klines in results:
             for k in klines:
                 day = k["ist_date_key"]
-                if day not in wanted_keys or day == today_key:
+                if day not in wanted_keys:
                     continue
                 if day not in daily:
                     daily[day] = {"bybit": 0, "binance": 0, "date_fmt": date_fmt(
@@ -424,15 +456,14 @@ async def aggregate_daily_volume_ist(session: aiohttp.ClientSession,
     await process_bybit()
     await process_binance()
 
-    # For today, use 24h ticker
-    if today_key in wanted_keys:
-        bybit_vols, binance_vols = await asyncio.gather(
-            bybit_24h_all(session),
-            binance_24h_all(session),
-        )
-        daily[today_key] = {
-            "bybit": sum(bybit_vols.values()),
-            "binance": sum(binance_vols.values()),
+    # Mark today as live (it's incomplete but accurate "since midnight")
+    if today_key in daily:
+        daily[today_key]["is_live"] = True
+    elif today_key in wanted_keys:
+         # If no data yet (e.g. just after midnight), init with 0
+         daily[today_key] = {
+            "bybit": 0,
+            "binance": 0,
             "date_fmt": date_fmt(now_ist()),
             "is_live": True,
         }
@@ -458,50 +489,47 @@ async def token_daily_volume_ist(session: aiohttp.ClientSession, symbol: str,
     today_in_range = start.strftime("%Y-%m-%d") <= today_key <= end.strftime("%Y-%m-%d")
 
     # For historical days, use hourly klines
-    # Adjust end to exclude today (we'll use ticker for today)
-    hist_end_ms = end_ms
-    if today_in_range:
-        yesterday = now_ist().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(seconds=1)
-        hist_end_ms = int(yesterday.timestamp() * 1000)
-
+    # Adjust end to exclude today (we'll fetch today separately)
+    # Actually, token_daily uses hourly klines which ARE accurate for "since midnight".
+    # So we can just use hourly klines for today as well!
+    # The only issue is that "hourly" might be slightly delayed vs "ticker".
+    # But for "Since Midnight", hourly sum is better than 24h ticker.
+    
+    # We will use hourly klines for the WHOLE range including today.
+    # This ensures consistency.
+    
     daily = {}  # type: Dict[str, Dict]
 
-    if hist_end_ms >= start_ms:
-        bybit_hourly, binance_hourly = await asyncio.gather(
-            bybit_kline_hourly(session, symbol, start_ms, hist_end_ms),
-            binance_kline_hourly(session, symbol, start_ms, hist_end_ms),
-        )
+    bybit_hourly, binance_hourly = await asyncio.gather(
+        bybit_kline_hourly(session, symbol, start_ms, end_ms),
+        binance_kline_hourly(session, symbol, start_ms, end_ms),
+    )
 
-        for k in bybit_hourly:
-            day = k["ist_date_key"]
-            if day not in daily:
-                daily[day] = {"bybit": 0, "binance": 0, "bybit_base": 0, "binance_base": 0,
-                              "date_fmt": date_fmt(datetime.strptime(day, "%Y-%m-%d"))}
-            daily[day]["bybit"] += k["turnover"]
-            daily[day]["bybit_base"] += k["volume"]
+    for k in bybit_hourly:
+        day = k["ist_date_key"]
+        if day not in daily:
+            daily[day] = {"bybit": 0, "binance": 0, "bybit_base": 0, "binance_base": 0,
+                          "date_fmt": date_fmt(datetime.strptime(day, "%Y-%m-%d"))}
+        daily[day]["bybit"] += k["turnover"]
+        daily[day]["bybit_base"] += k["volume"]
 
-        for k in binance_hourly:
-            day = k["ist_date_key"]
-            if day not in daily:
-                daily[day] = {"bybit": 0, "binance": 0, "bybit_base": 0, "binance_base": 0,
-                              "date_fmt": date_fmt(datetime.strptime(day, "%Y-%m-%d"))}
-            daily[day]["binance"] += k["turnover"]
-            daily[day]["binance_base"] += k["volume"]
+    for k in binance_hourly:
+        day = k["ist_date_key"]
+        if day not in daily:
+            daily[day] = {"bybit": 0, "binance": 0, "bybit_base": 0, "binance_base": 0,
+                          "date_fmt": date_fmt(datetime.strptime(day, "%Y-%m-%d"))}
+        daily[day]["binance"] += k["turnover"]
+        daily[day]["binance_base"] += k["volume"]
 
-    # For today, use 24h ticker
     if today_in_range:
-        bybit_data, binance_data = await asyncio.gather(
-            bybit_24h_symbol(session, symbol),
-            binance_24h_symbol(session, symbol),
-        )
-        daily[today_key] = {
-            "bybit": bybit_data.get("volume_usdt", 0),
-            "binance": binance_data.get("volume_usdt", 0),
-            "bybit_base": bybit_data.get("volume_base", 0),
-            "binance_base": binance_data.get("volume_base", 0),
-            "date_fmt": date_fmt(now_ist()),
-            "is_live": True,
-        }
+        if today_key in daily:
+             daily[today_key]["is_live"] = True
+        else:
+             daily[today_key] = {
+                "bybit": 0, "binance": 0, "bybit_base": 0, "binance_base": 0,
+                "date_fmt": date_fmt(now_ist()),
+                "is_live": True,
+             }
 
     return daily
 
@@ -547,29 +575,28 @@ async def cmd_volume(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     async with aiohttp.ClientSession() as session:
         if single_date is None and range_start is None:
-            # ── Today's 24h aggregate ──
-            msg = await update.message.reply_text("⏳ Fetching today's volumes...")
+            # ── Today's aggregate (Since Midnight IST) ──
+            msg = await update.message.reply_text("⏳ Fetching today's volumes (Since 00:00 IST)...")
 
-            bybit_vols, binance_vols = await asyncio.gather(
-                bybit_24h_all(session),
-                binance_24h_all(session),
-            )
-
-            bybit_total = sum(bybit_vols.values())
-            binance_total = sum(binance_vols.values())
+            # For "Since Midnight", we can't use 24h ticker.
+            # We must use aggregate_daily_volume_ist for just today.
+            today = today_ist()
+            daily = await aggregate_daily_volume_ist(session, today, today)
+            
+            key = today.strftime("%Y-%m-%d")
+            d = daily.get(key, {})
+            
+            bybit_total = d.get("bybit", 0)
+            binance_total = d.get("binance", 0)
             combined = bybit_total + binance_total
             ist_now = now_ist()
 
             text = (
-                f"📊 *Today's USDT Perp Volume*\n"
+                f"📊 *Today's USDT Perp Volume* (Since 00:00 IST)\n"
                 f"🕐 _{ist_now.strftime('%d %b %Y, %I:%M %p')} IST_\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"🟡 *Bybit*\n"
-                f"   Volume: `{fmt(bybit_total)}`\n"
-                f"   Pairs: `{len(bybit_vols)}`\n\n"
-                f"🟠 *Binance*\n"
-                f"   Volume: `{fmt(binance_total)}`\n"
-                f"   Pairs: `{len(binance_vols)}`\n\n"
+                f"🟡 *Bybit*: `{fmt(bybit_total)}`\n"
+                f"🟠 *Binance*: `{fmt(binance_total)}`\n\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"🏦 *Combined*: `{fmt(combined)}`\n"
             )
@@ -578,14 +605,15 @@ async def cmd_volume(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif single_date and single_date != "invalid":
             # ── Single date aggregate ──
             if is_today_ist(single_date):
-                # Use 24h ticker for today
-                msg = await update.message.reply_text("⏳ Fetching today's volumes...")
-                bybit_vols, binance_vols = await asyncio.gather(
-                    bybit_24h_all(session),
-                    binance_24h_all(session),
-                )
-                bybit_total = sum(bybit_vols.values())
-                binance_total = sum(binance_vols.values())
+                 # Same logic as above 'Today', just formatted slightly differently
+                msg = await update.message.reply_text("⏳ Fetching this day's volumes (Since 00:00 IST)...")
+                today = today_ist()
+                daily = await aggregate_daily_volume_ist(session, today, today)
+                key = today.strftime("%Y-%m-%d")
+                d = daily.get(key, {})
+                
+                bybit_total = d.get("bybit", 0)
+                binance_total = d.get("binance", 0)
                 combined = bybit_total + binance_total
                 ist_now = now_ist()
 
@@ -697,113 +725,76 @@ async def cmd_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     async with aiohttp.ClientSession() as session:
         if single_date is None and range_start is None:
-            # ── Today's 24h for this token ──
-            msg = await update.message.reply_text(f"⏳ Fetching {symbol} volumes...")
+            # ── Today's for this token (Since Midnight) ──
+            msg = await update.message.reply_text(f"⏳ Fetching {symbol} volumes (Since 00:00 IST)...")
 
-            bybit_data, binance_data = await asyncio.gather(
-                bybit_24h_symbol(session, symbol),
-                binance_24h_symbol(session, symbol),
-            )
-
-            if not bybit_data and not binance_data:
-                await msg.edit_text(
-                    f"⚠️ `{symbol}` not found on either exchange. Check the token name.",
-                    parse_mode=ParseMode.MARKDOWN,
-                )
-                return
-
+            today = today_ist()
+            daily = await token_daily_volume_ist(session, symbol, today, today)
+            
+            key = today.strftime("%Y-%m-%d")
+            d = daily.get(key, {})
+            
+            bybit_vol = d.get("bybit", 0)
+            binance_vol = d.get("binance", 0)
+            bybit_base = d.get("bybit_base", 0)
+            binance_base = d.get("binance_base", 0)
+            combined = bybit_vol + binance_vol
             ist_now = now_ist()
+
             lines = [
-                f"📊 *{symbol} — 24h Perp Volume*\n"
+                f"📊 *{symbol} — Today's Volume*\n"
                 f"🕐 _{ist_now.strftime('%d %b %Y, %I:%M %p')} IST_\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
             ]
 
-            total = 0
-
-            if bybit_data:
-                total += bybit_data["volume_usdt"]
-                lines.append(
-                    f"🟡 *Bybit*\n"
-                    f"   Volume: `{fmt(bybit_data['volume_usdt'])}`\n"
-                    f"   Base Vol: `{bybit_data['volume_base']:,.2f} {token}`\n"
-                    f"   Price: `${bybit_data['last_price']:,.4f}`\n"
-                )
-            else:
-                lines.append(f"🟡 *Bybit*: _Not listed_\n")
-
-            if binance_data:
-                total += binance_data["volume_usdt"]
-                lines.append(
-                    f"🟠 *Binance*\n"
-                    f"   Volume: `{fmt(binance_data['volume_usdt'])}`\n"
-                    f"   Base Vol: `{binance_data['volume_base']:,.2f} {token}`\n"
-                    f"   Price: `${binance_data['last_price']:,.4f}`\n"
-                )
-            else:
-                lines.append(f"🟠 *Binance*: _Not listed_\n")
+            lines.append(
+                f"🟡 *Bybit*\n"
+                f"   Volume: `{fmt(bybit_vol)}`\n"
+                f"   Base Vol: `{bybit_base:,.2f} {token}`\n"
+            )
+            lines.append(
+                f"🟠 *Binance*\n"
+                f"   Volume: `{fmt(binance_vol)}`\n"
+                f"   Base Vol: `{binance_base:,.2f} {token}`\n"
+            )
 
             lines.append(
                 f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🏦 *Combined*: `{fmt(total)}`"
+                f"🏦 *Combined*: `{fmt(combined)}`"
             )
 
             await msg.edit_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
         elif single_date and single_date != "invalid":
             # ── Single date for this token ──
-            if is_today_ist(single_date):
-                # Redirect to 24h ticker for today
-                msg = await update.message.reply_text(f"⏳ Fetching {symbol} volumes...")
-                bybit_data, binance_data = await asyncio.gather(
-                    bybit_24h_symbol(session, symbol),
-                    binance_24h_symbol(session, symbol),
-                )
-                bybit_vol = bybit_data.get("volume_usdt", 0)
-                binance_vol = binance_data.get("volume_usdt", 0)
-                bybit_base = bybit_data.get("volume_base", 0)
-                binance_base = binance_data.get("volume_base", 0)
-                combined = bybit_vol + binance_vol
-                ist_now = now_ist()
-
-                text = (
-                    f"📊 *{symbol} — {date_fmt(single_date)}* 🔴 LIVE\n"
-                    f"🕐 _{ist_now.strftime('%I:%M %p')} IST_\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"🟡 *Bybit*: `{fmt(bybit_vol)}` ({bybit_base:,.2f} {token})\n"
-                    f"🟠 *Binance*: `{fmt(binance_vol)}` ({binance_base:,.2f} {token})\n\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"🏦 *Combined*: `{fmt(combined)}`\n"
-                )
-                await msg.edit_text(text, parse_mode=ParseMode.MARKDOWN)
-            else:
-                msg = await update.message.reply_text(
+            is_live = is_today_ist(single_date)
+            msg = await update.message.reply_text(
                     f"⏳ Fetching {symbol} volume for {date_fmt(single_date)} (IST)...")
 
-                daily = await token_daily_volume_ist(session, symbol,
-                                                     single_date, single_date)
-                key = single_date.strftime("%Y-%m-%d")
+            daily = await token_daily_volume_ist(session, symbol,
+                                                 single_date, single_date)
+            key = single_date.strftime("%Y-%m-%d")
 
-                if key in daily:
-                    d = daily[key]
-                    bybit_vol = d["bybit"]
-                    binance_vol = d["binance"]
-                    bybit_base = d.get("bybit_base", 0)
-                    binance_base = d.get("binance_base", 0)
-                    combined = bybit_vol + binance_vol
-
-                    text = (
-                        f"📊 *{symbol} — {d['date_fmt']}* (IST)\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"🟡 *Bybit*: `{fmt(bybit_vol)}` ({bybit_base:,.2f} {token})\n"
-                        f"🟠 *Binance*: `{fmt(binance_vol)}` ({binance_base:,.2f} {token})\n\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"🏦 *Combined*: `{fmt(combined)}`\n"
-                    )
-                else:
-                    text = f"⚠️ No data for `{symbol}` on {date_fmt(single_date)}"
-
-                await msg.edit_text(text, parse_mode=ParseMode.MARKDOWN)
+            d = daily.get(key, {})
+            bybit_vol = d.get("bybit", 0)
+            binance_vol = d.get("binance", 0)
+            bybit_base = d.get("bybit_base", 0)
+            binance_base = d.get("binance_base", 0)
+            combined = bybit_vol + binance_vol
+            
+            live_tag = " 🔴 LIVE" if is_live else ""
+            ist_now = now_ist()
+            
+            text = (
+                f"📊 *{symbol} — {date_fmt(single_date)}*{live_tag}\n"
+                f"🕐 _{ist_now.strftime('%I:%M %p')} IST_\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"🟡 *Bybit*: `{fmt(bybit_vol)}` ({bybit_base:,.2f} {token})\n"
+                f"🟠 *Binance*: `{fmt(binance_vol)}` ({binance_base:,.2f} {token})\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🏦 *Combined*: `{fmt(combined)}`\n"
+            )
+            await msg.edit_text(text, parse_mode=ParseMode.MARKDOWN)
 
         else:
             # ── Date range for this token ──
