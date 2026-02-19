@@ -571,7 +571,8 @@ async def cmd_volume(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"   Volume: `{fmt(binance_total)}`\n"
                 f"   Pairs: `{len(binance_vols)}`\n\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🏦 *Combined*: `{fmt(combined)}`\n"
+                f"🏦 *Combined*: `{fmt(combined)}`\n\n"
+                f"_ℹ️ 24h Rolling = volume from the last 24 hours, not since midnight IST._"
             )
             await msg.edit_text(text, parse_mode=ParseMode.MARKDOWN)
 
@@ -596,7 +597,8 @@ async def cmd_volume(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"🟡 *Bybit*: `{fmt(bybit_total)}`\n"
                     f"🟠 *Binance*: `{fmt(binance_total)}`\n\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"🏦 *Combined*: `{fmt(combined)}`\n"
+                    f"🏦 *Combined*: `{fmt(combined)}`\n\n"
+                    f"_ℹ️ Today's volume is 24h rolling (last 24 hours), not since midnight IST._"
                 )
                 await msg.edit_text(text, parse_mode=ParseMode.MARKDOWN)
             else:
