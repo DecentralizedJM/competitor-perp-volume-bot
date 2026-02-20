@@ -64,6 +64,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Suppress httpx/telegram loggers that expose the bot token in URLs
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("telegram.ext._updater").setLevel(logging.WARNING)
+
 BYBIT_BASE = "https://api.bybit.com"
 BINANCE_BASE = "https://fapi.binance.com"
 
@@ -529,12 +534,16 @@ _Date format: ddmmyy (e.g. 190226 = 19 Feb 2026)_
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start and /help."""
+    user = update.effective_user
+    logger.info(f"CMD /start | chat_id={update.effective_chat.id} | user={user.username or user.first_name} (id={user.id})")
     await update.message.reply_text(HELP_TEXT, parse_mode=ParseMode.MARKDOWN)
 
 
 async def cmd_volume(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /volume command."""
     arg = " ".join(context.args).strip() if context.args else ""
+    user = update.effective_user
+    logger.info(f"CMD /volume {arg} | chat_id={update.effective_chat.id} | user={user.username or user.first_name} (id={user.id})")
 
     single_date, range_start, range_end = parse_date_arg(arg)
 
@@ -687,6 +696,9 @@ async def cmd_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
     token = parts[0][1:].upper()
     arg = parts[1].strip() if len(parts) > 1 else ""
     symbol = f"{token}USDT"
+
+    user = update.effective_user
+    logger.info(f"CMD /{token} {arg} | chat_id={update.effective_chat.id} | user={user.username or user.first_name} (id={user.id})")
 
     single_date, range_start, range_end = parse_date_arg(arg)
 
